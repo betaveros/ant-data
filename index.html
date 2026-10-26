@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data Explorer</title>
+<style>
+  .chart { display: grid; grid-template-columns: max-content 1fr; gap: 2px 8px; align-items: center; max-width: 700px; }
+  .label { text-align: right; }
+  .bar { display: inline-block; height: 1em; background: steelblue; vertical-align: middle; margin-right: 4px; }
+</style>
+</head>
+<body>
+<h2>Anthropic Interviewer: median interview length (words)</h2>
+<div id="interviewer"></div>
+
+<h2>Values in the Wild: all values Claude expressed (% of conversations)</h2>
+<div id="values"></div>
+
+<h2>Economic Index: countries by Anthropic AI Usage Index, May 2026</h2>
+<div id="econ"></div>
+
+<script type="module">
+import { parquetReadObjects } from 'https://cdn.jsdelivr.net/npm/hyparquet@1.31.5/+esm';
+import { compressors } from 'https://cdn.jsdelivr.net/npm/hyparquet-compressors@1.1.2/+esm';
+
+async function read(path, options = {}) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${res.status} fetching ${path}`);
+  return parquetReadObjects({ file: await res.arrayBuffer(), compressors, ...options });
+}
+
+// rows: { label: string, value: number }[]
+function barChart(el, rows, digits) {
+  const max = Math.max(...rows.map(r => r.value));
+  const chart = document.createElement('div');
+  chart.className = 'chart';
+  for (const r of rows) {
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = r.label;
+    const bar = document.createElement('span');
+    bar.className = 'bar';
+    bar.style.width = `${(r.value / max) * 85}%`;
+    const cell = document.createElement('div');
+    cell.append(bar, r.value.toFixed(digits));
+    chart.append(label, cell);
+  }
+  el.replaceChildren(chart);
+}
+
+async function load(id, fn) {
+  const el = document.getElementById(id);
+  el.textContent = 'Loading…';
+  try {
+    await fn(el);
+  } catch (err) {
+    el.textContent = `Failed: ${err.message}`;
+  }
+}
+
+load('interviewer', async el => {
+  const groups = ['workforce', 'creatives', 'scientists'];
+  const rows = await Promise.all(groups.map(async g => {
+    const data = await read(`anthropic-interviewer/interview_transcripts/${g}_transcripts.parquet`, { columns: ['text'] });
+    const words = data.map(d => d.text.split(/\s+/).length).sort((a, b) => a - b);
+    return { label: `${g} (n=${data.length})`, value: words[words.length >> 1] };
+  }));
+  barChart(el, rows, 0);
+});
+
+load('values', async el => {
+  const data = await read('values-in-the-wild/values_frequencies.parquet');
+  const rows = data
+    .sort((a, b) => b.pct_convos - a.pct_convos)
+    .map(d => ({ label: d.value, value: d.pct_convos }));
+  barChart(el, rows, 3);
+});
+
+load('econ', async el => {
+  const data = await read('anthropic-economic-index-2026-06-26/aei_claude_ai_2026-06-26.parquet', {
+    columns: ['date_start', 'geo_id', 'value'],
+    filter: { metric_id: 'usage_per_capita_index', geo_level: 'country', category_name: 'overall' },
+  });
+  const rows = data
+    .filter(d => d.date_start.toISOString().startsWith('2026-05'))
+    .sort((a, b) => b.value - a.value)
+    .map(d => ({ label: d.geo_id, value: d.value }));
+  barChart(el, rows, 2);
+});
+</script>
+</body>
+</html>
